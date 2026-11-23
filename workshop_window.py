@@ -1,4 +1,4 @@
-from PyQt6.QtCore import QDate, Qt
+from PyQt6.QtCore import QDate, Qt, QTimer
 from PyQt6.QtGui import QColor, QBrush
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
                              QDateEdit, QPushButton, QTableWidget, QTableWidgetItem,
@@ -72,7 +72,12 @@ class WorkshopWindow(QWidget):
         controls = QHBoxLayout()
         self.edit_search = QLineEdit()
         self.edit_search.setPlaceholderText("Поиск по наименованию...")
-        self.edit_search.textChanged.connect(self.refresh)
+        # debounce: не гоняем запрос на каждый нажатый символ
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(250)
+        self._search_timer.timeout.connect(self.refresh)
+        self.edit_search.textChanged.connect(self._search_timer.start)
         controls.addWidget(self.edit_search)
 
         btn_add = QPushButton("Добавить")
@@ -106,16 +111,18 @@ class WorkshopWindow(QWidget):
         text = self.edit_search.text().strip().lower()
         with get_connection() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT product_id, name, quantity, expiry_date FROM finished_products ORDER BY product_id;")
+            query = ("SELECT product_id, name, quantity, expiry_date FROM finished_products")
+            params = ()
+            if text:
+                # поиск на стороне СУБД — не тянем все строки ради фильтра
+                query += " WHERE lower(name) LIKE %s"
+                params = ("%" + text + "%",)
+            cur.execute(query + " ORDER BY product_id;", params)
             rows = cur.fetchall()
 
         self.table.setSortingEnabled(False)
-        self.table.setRowCount(0)
-        for pid, name, qty, exp in rows:
-            if text and text not in name.lower():
-                continue
-            row_pos = self.table.rowCount()
-            self.table.insertRow(row_pos)
+        self.table.setRowCount(len(rows))
+        for r, (pid, name, qty, exp) in enumerate(rows):
             values = [str(pid), name, str(qty), exp.strftime("%d.%m.%Y")]
             low = qty < 5
             for j, val in enumerate(values):
@@ -124,7 +131,7 @@ class WorkshopWindow(QWidget):
                     item.setBackground(QBrush(QColor(ROW_LOW)))
                 if j in (0, 2):
                     item.setData(Qt.ItemDataRole.EditRole, int(val))
-                self.table.setItem(row_pos, j, item)
+                self.table.setItem(r, j, item)
         self.table.setSortingEnabled(True)
 
     def get_selected_id(self):

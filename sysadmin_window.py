@@ -1,5 +1,5 @@
 import hashlib
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
                              QComboBox, QPushButton, QTableWidget, QTableWidgetItem,
                              QDialog, QFormLayout, QMessageBox)
@@ -72,7 +72,12 @@ class SysadminWindow(QWidget):
         controls = QHBoxLayout()
         self.edit_search = QLineEdit()
         self.edit_search.setPlaceholderText("Поиск по ФИО или логину...")
-        self.edit_search.textChanged.connect(self.refresh)
+        # debounce: не гоняем запрос на каждый нажатый символ
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(250)
+        self._search_timer.timeout.connect(self.refresh)
+        self.edit_search.textChanged.connect(self._search_timer.start)
         controls.addWidget(self.edit_search)
         btn_add = QPushButton("Добавить"); btn_add.clicked.connect(self.add_user)
         btn_edit = QPushButton("Редактировать"); btn_edit.clicked.connect(self.edit_user)
@@ -94,16 +99,19 @@ class SysadminWindow(QWidget):
         text = self.edit_search.text().strip().lower()
         with get_connection() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT user_id, login, full_name, role FROM users ORDER BY user_id;")
+            query = "SELECT user_id, login, full_name, role FROM users"
+            params = ()
+            if text:
+                # поиск на стороне СУБД — не тянем все строки ради фильтра
+                query += " WHERE lower(full_name) LIKE %s OR lower(login) LIKE %s"
+                like = "%" + text + "%"
+                params = (like, like)
+            cur.execute(query + " ORDER BY user_id;", params)
             rows = cur.fetchall()
 
         self.table.setSortingEnabled(False)
-        self.table.setRowCount(0)
-        for uid, login, fio, role in rows:
-            if text and text not in fio.lower() and text not in login.lower():
-                continue
-            r = self.table.rowCount()
-            self.table.insertRow(r)
+        self.table.setRowCount(len(rows))
+        for r, (uid, login, fio, role) in enumerate(rows):
             for j, val in enumerate([str(uid), login, fio, role]):
                 item = QTableWidgetItem(val)
                 if j == 0:
