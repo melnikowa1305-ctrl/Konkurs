@@ -1,5 +1,4 @@
-from datetime import date
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QColor, QBrush
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QLineEdit, QComboBox, QPushButton, QTableWidget,
@@ -30,7 +29,12 @@ class ManagerWindow(QWidget):
 
         self.edit_search = QLineEdit()
         self.edit_search.setPlaceholderText("Поиск по наименованию...")
-        self.edit_search.textChanged.connect(self.refresh)
+        # debounce: не гоняем запрос на каждый нажатый символ
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(250)
+        self._search_timer.timeout.connect(self.refresh)
+        self.edit_search.textChanged.connect(self._search_timer.start)
         controls.addWidget(self.edit_search)
 
         self.cmb_filter = QComboBox()
@@ -55,25 +59,24 @@ class ManagerWindow(QWidget):
         self.refresh()
 
     def refresh(self):
-        text = self.edit_search.text().strip().lower()
+        text = self.edit_search.text().strip()
         flt = self.cmb_filter.currentText()
-        today = date.today()
+
+        # Фильтрация и поиск — на стороне СУБД: меньше данных через сеть,
+        # работает индекс (при наличии) и не гоняем весь таблицу в Python.
+        query = ("SELECT product_id, name, quantity, expiry_date FROM finished_products"
+                 " WHERE lower(name) LIKE %s")
+        params = ["%" + text.lower() + "%"]
+        if flt == "Только просроченные":
+            query += " AND expiry_date < CURRENT_DATE"
+        elif flt == "Количество < 5":
+            query += " AND quantity < 5"
+        query += ";"
 
         with get_connection() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT product_id, name, quantity, expiry_date FROM finished_products;")
-            rows = cur.fetchall()
-
-        # Фильтрация и поиск выполняем на стороне Python — наглядно для ДЭ
-        filtered = []
-        for pid, name, qty, exp in rows:
-            if text and text not in name.lower():
-                continue
-            if flt == "Только просроченные" and exp >= today:
-                continue
-            if flt == "Количество < 5" and qty >= 5:
-                continue
-            filtered.append((pid, name, qty, exp))
+            cur.execute(query, params)
+            filtered = cur.fetchall()
 
         # Заполняем таблицу
         self.table.setSortingEnabled(False)      # отключаем на время заполнения

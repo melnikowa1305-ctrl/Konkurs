@@ -1,5 +1,5 @@
 from datetime import date
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QColor, QBrush
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
                              QComboBox, QPushButton, QTableWidget, QTableWidgetItem,
@@ -62,7 +62,12 @@ class KeeperWindow(QWidget):
 
         self.edit_search = QLineEdit()
         self.edit_search.setPlaceholderText("Поиск по наименованию...")
-        self.edit_search.textChanged.connect(self.refresh)
+        # debounce: не гоняем запрос на каждый нажатый символ
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(250)
+        self._search_timer.timeout.connect(self.refresh)
+        self.edit_search.textChanged.connect(self._search_timer.start)
         top.addWidget(self.edit_search)
 
         btn_refresh = QPushButton("Обновить")
@@ -106,22 +111,26 @@ class KeeperWindow(QWidget):
         with get_connection() as conn:
             cur = conn.cursor()
             if is_materials:
-                cur.execute("SELECT ingredient_id, name, quantity, unit FROM ingredients;")
+                query = "SELECT ingredient_id, name, quantity, unit FROM ingredients"
             else:
-                cur.execute("SELECT product_id, name, quantity, expiry_date FROM finished_products;")
+                query = "SELECT product_id, name, quantity, expiry_date FROM finished_products"
+            if text:
+                # поиск на стороне СУБД — не тянем все строки ради фильтра
+                query += " WHERE lower(name) LIKE %s"
+                cur.execute(query + ";", ("%" + text + "%",))
+            else:
+                cur.execute(query + ";")
             rows = cur.fetchall()
 
         self.table.setSortingEnabled(False)
-        self.table.setRowCount(0)
-        self.table.setHorizontalHeaderLabels(
-            ["ID", "Наименование", "Количество", "Ед. изм." if is_materials else "Срок годности"]
-        )
-
-        for pid, name, qty, extra in rows:
-            if text and text not in name.lower():
-                continue
-            r = self.table.rowCount()
-            self.table.insertRow(r)
+        # заголовки меняются только при переключении таблицы — не перерисовываем зря
+        header = ["ID", "Наименование", "Количество",
+                  "Ед. изм." if is_materials else "Срок годности"]
+        if self.table.horizontalHeaderLabels() != header:
+            self.table.setHorizontalHeaderLabels(header)
+        filtered = rows          # фильтрация уже выполнена на стороне СУБД
+        self.table.setRowCount(len(filtered))
+        for r, (pid, name, qty, extra) in enumerate(filtered):
             if is_materials:
                 values = [str(pid), name, str(qty), extra]
             else:

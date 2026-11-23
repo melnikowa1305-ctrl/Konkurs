@@ -43,30 +43,34 @@ class DirectorWindow(QWidget):
 
     def refresh(self):
         flt = self.cmb_filter.currentText()
+        query = """
+            SELECT w.request_id, p.name, w.quantity, w.request_date, w.status, u.full_name
+            FROM write_off_requests w
+            JOIN finished_products p ON w.product_id = p.product_id
+            LEFT JOIN users u ON w.created_by = u.user_id
+        """
+        params = ()
+        # фильтрация по статусу — на стороне СУБД (обратное отображение метки статуса)
+        status = next((s for s, label in STATUS_LABEL.items() if label == flt), None)
+        if status:
+            query += " WHERE w.status = %s"
+            params = (status,)
+        query += " ORDER BY w.request_id DESC;"
+
         with get_connection() as conn:
-            cur = conn.cursor()
-            cur.execute("""
-                SELECT w.request_id, p.name, w.quantity, w.request_date, w.status, u.full_name
-                FROM write_off_requests w
-                JOIN finished_products p ON w.product_id = p.product_id
-                LEFT JOIN users u ON w.created_by = u.user_id
-                ORDER BY w.request_id DESC;
-            """)
+            cur = conn.cursor()   # обычный курсор: совместим с пулом соединений
+            cur.execute(query, params)
             rows = cur.fetchall()
 
-        self.table.setRowCount(0)
-        for rid, name, qty, rdate, status, author in rows:
-            if flt != "Все" and STATUS_LABEL[status] != flt:
-                continue
-            r = self.table.rowCount()
-            self.table.insertRow(r)
+        self.table.setRowCount(len(rows))
+        for r, (rid, name, qty, rdate, status_val, author) in enumerate(rows):
             values = [str(rid), name, str(qty), rdate.strftime("%d.%m.%Y"),
-                      STATUS_LABEL[status], author or "—"]
+                      STATUS_LABEL[status_val], author or "—"]
             for j, val in enumerate(values):
                 item = QTableWidgetItem(val)
                 if j == 0:
                     item.setData(Qt.ItemDataRole.EditRole, int(val))
-                if status == "pending":
+                if status_val == "pending":
                     item.setBackground(QBrush(QColor(ROW_PENDING)))
                 self.table.setItem(r, j, item)
 
